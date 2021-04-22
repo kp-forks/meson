@@ -1114,7 +1114,7 @@ class XCodeBackend(backends.Backend):
             custom_dict.add_item('runOnlyForDeploymentPostprocessing', 0)
             custom_dict.add_item('shellPath', '/bin/sh')
             workdir = self.environment.get_build_dir()
-            cmdstr = ' '.join([f'\\"{x}\\"' for x in fixed_cmd])
+            cmdstr = ' '.join([f"\\'{x}\\'" for x in fixed_cmd])
             custom_dict.add_item('shellScript', f'"cd {workdir}; {cmdstr}"')
             custom_dict.add_item('showEnvVarsInLog', 0)
 
@@ -1301,6 +1301,8 @@ class XCodeBackend(backends.Backend):
         links_dylib = False
         dep_libs = []
         for l in target.link_targets:
+            if isinstance(target, build.SharedModule) and isinstance(l, build.Executable):
+                continue
             abs_path = os.path.join(self.environment.get_build_dir(),
                                     l.subdir, buildtype, l.get_filename())
             dep_libs.append("'%s'" % abs_path)
@@ -1345,8 +1347,8 @@ class XCodeBackend(backends.Backend):
                 product_name = target.get_basename()
             ldargs += target.link_args
             linker, stdlib_args = self.determine_linker_and_stdlib_args(target)
-            ldargs += self.build.get_project_link_args(linker, target.subproject, target.for_machine)
             if not isinstance(target, build.StaticLibrary):
+                ldargs += self.build.get_project_link_args(linker, target.subproject, target.for_machine)
                 ldargs += self.build.get_global_link_args(linker, target.for_machine)
             cargs = []
             for dep in target.get_external_deps():
@@ -1421,7 +1423,7 @@ class XCodeBackend(backends.Backend):
                 settings_dict.add_item('DYLIB_COMPATIBILITY_VERSION', '""')
             else:
                 if dylib_version is not None:
-                    settings_dict.add_item('DYLIB_CURRENT_VERSION', f'"{dylib_version}')
+                    settings_dict.add_item('DYLIB_CURRENT_VERSION', f'"{dylib_version}"')
             if target.prefix:
                 settings_dict.add_item('EXECUTABLE_PREFIX', target.prefix)
             if target.suffix:
@@ -1494,7 +1496,7 @@ class XCodeBackend(backends.Backend):
                     # b) I don't know why it works or why every backslash must be escaped into eight backslashes
                     a = a.replace(chr(92), 8*chr(92)) # chr(92) is backslash, this how we smuggle it in without Python's quoting grabbing it.
                     a = a.replace(r'"', r'\\\"')
-                    if ' ' in a:
+                    if ' ' in a or "'" in a:
                         a = r'\"' + a + r'\"'
                     quoted_args.append(a)
                 settings_dict.add_item(f'OTHER_{langname}FLAGS', '"' + ' '.join(quoted_args) + '"')
