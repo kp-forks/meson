@@ -1,19 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2013-2021 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
-from .. import mesonlib, mlog
+from .. import coredata, mesonlib, mlog
 from .disabler import Disabler
 from .exceptions import InterpreterException, InvalidArguments
 from ._unholder import _unholder
@@ -29,8 +19,7 @@ if T.TYPE_CHECKING:
     from typing_extensions import Protocol
 
     from .. import mparser
-    from .baseobjects import InterpreterObject, TV_func, TYPE_var, TYPE_kwargs
-    from .interpreterbase import SubProject
+    from .baseobjects import InterpreterObject, SubProject, TV_func, TYPE_var, TYPE_kwargs
     from .operator import MesonOperator
 
     _TV_IntegerObject = T.TypeVar('_TV_IntegerObject', bound=InterpreterObject, contravariant=True)
@@ -70,19 +59,6 @@ def noKwargs(f: TV_func) -> TV_func:
         kwargs = get_callee_args(wrapped_args)[2]
         if kwargs:
             raise InvalidArguments('Function does not take keyword arguments.')
-        return f(*wrapped_args, **wrapped_kwargs)
-    return T.cast('TV_func', wrapped)
-
-def stringArgs(f: TV_func) -> TV_func:
-    @wraps(f)
-    def wrapped(*wrapped_args: T.Any, **wrapped_kwargs: T.Any) -> T.Any:
-        args = get_callee_args(wrapped_args)[1]
-        if not isinstance(args, list):
-            mlog.debug('Not a list:', str(args))
-            raise InvalidArguments('Argument not a list.')
-        if not all(isinstance(s, str) for s in args):
-            mlog.debug('Element not a string:', str(args))
-            raise InvalidArguments('Arguments must be strings.')
         return f(*wrapped_args, **wrapped_kwargs)
     return T.cast('TV_func', wrapped)
 
@@ -139,22 +115,6 @@ def typed_operator(operator: MesonOperator,
         def wrapper(self: 'InterpreterObject', other: TYPE_var) -> TYPE_var:
             if not isinstance(other, types):
                 raise InvalidArguments(f'The `{operator.value}` of {self.display_name()} does not accept objects of type {type(other).__name__} ({other})')
-            return f(self, other)
-        return T.cast('_TV_FN_Operator', wrapper)
-    return inner
-
-def unary_operator(operator: MesonOperator) -> T.Callable[['_TV_FN_Operator'], '_TV_FN_Operator']:
-    """Decorator that does type checking for unary operator calls.
-
-    This decorator is for unary operators that do not take any other objects.
-    It should be impossible for a user to accidentally break this. Triggering
-    this check always indicates a bug in the Meson interpreter.
-    """
-    def inner(f: '_TV_FN_Operator') -> '_TV_FN_Operator':
-        @wraps(f)
-        def wrapper(self: 'InterpreterObject', other: TYPE_var) -> TYPE_var:
-            if other is not None:
-                raise mesonlib.MesonBugException(f'The unary operator `{operator.value}` of {self.display_name()} was passed the object {other} of type {type(other).__name__}')
             return f(self, other)
         return T.cast('_TV_FN_Operator', wrapper)
     return inner
@@ -271,7 +231,7 @@ def typed_pos_args(name: str, *types: T.Union[T.Type, T.Tuple[T.Type, ...]],
                     diff = num_types + len(optargs) - num_args
                     nargs[i] = tuple(list(args) + [None] * diff)
                 else:
-                    nargs[i] = args
+                    nargs[i] = tuple(args)
             else:
                 nargs[i] = tuple(args)
             return f(*nargs, **wrapped_kwargs)
@@ -604,14 +564,15 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
 
     feature_registry: T.ClassVar[T.Dict[str, T.Dict[str, T.Set[T.Tuple[str, T.Optional['mparser.BaseNode']]]]]]
     emit_notice = False
+    unconditional = False
 
     def __init__(self, feature_name: str, feature_version: str, extra_message: str = ''):
-        self.feature_name = feature_name  # type: str
-        self.feature_version = feature_version    # type: str
-        self.extra_message = extra_message  # type: str
+        self.feature_name = feature_name
+        self.feature_version = feature_version
+        self.extra_message = extra_message
 
     @staticmethod
-    def get_target_version(subproject: str) -> str:
+    def get_target_version(subproject: str) -> T.Union[str, mesonlib.NoProjectVersion]:
         # Don't do any checks if project() has not been parsed yet
         if subproject not in mesonlib.project_meson_versions:
             return ''
@@ -619,13 +580,13 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
 
     @staticmethod
     @abc.abstractmethod
-    def check_version(target_version: str, feature_version: str) -> bool:
+    def check_version(target_version: T.Union[str, mesonlib.NoProjectVersion], feature_version: str) -> bool:
         pass
 
     def use(self, subproject: 'SubProject', location: T.Optional['mparser.BaseNode'] = None) -> None:
         tv = self.get_target_version(subproject)
         # No target version
-        if tv == '':
+        if tv == '' and not self.unconditional:
             return
         # Target version is new enough, don't warn
         if self.check_version(tv, self.feature_version) and not self.emit_notice:
@@ -668,15 +629,15 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
         if '\n' in warning_str:
             mlog.warning(warning_str)
 
-    def log_usage_warning(self, tv: str, location: T.Optional['mparser.BaseNode']) -> None:
+    def log_usage_warning(self, tv: T.Union[str, mesonlib.NoProjectVersion], location: T.Optional['mparser.BaseNode']) -> None:
         raise InterpreterException('log_usage_warning not implemented')
 
     @staticmethod
-    def get_warning_str_prefix(tv: str) -> str:
+    def get_warning_str_prefix(tv: T.Union[str, mesonlib.NoProjectVersion]) -> str:
         raise InterpreterException('get_warning_str_prefix not implemented')
 
     @staticmethod
-    def get_notice_str_prefix(tv: str) -> str:
+    def get_notice_str_prefix(tv: T.Union[str, mesonlib.NoProjectVersion]) -> str:
         raise InterpreterException('get_notice_str_prefix not implemented')
 
     def __call__(self, f: TV_func) -> TV_func:
@@ -702,23 +663,35 @@ class FeatureNew(FeatureCheckBase):
     # Class variable, shared across all instances
     #
     # Format: {subproject: {feature_version: set(feature_names)}}
-    feature_registry = {}  # type: T.ClassVar[T.Dict[str, T.Dict[str, T.Set[T.Tuple[str, T.Optional[mparser.BaseNode]]]]]]
+    feature_registry = {}
 
     @staticmethod
-    def check_version(target_version: str, feature_version: str) -> bool:
-        return mesonlib.version_compare_condition_with_min(target_version, feature_version)
+    def check_version(target_version: T.Union[str, mesonlib.NoProjectVersion], feature_version: str) -> bool:
+        if isinstance(target_version, str):
+            return mesonlib.version_compare_condition_with_min(target_version, feature_version)
+        else:
+            # Warn for anything newer than the current semver base slot.
+            major = coredata.version.split('.', maxsplit=1)[0]
+            return mesonlib.version_compare(feature_version, f'<{major}.0')
 
     @staticmethod
-    def get_warning_str_prefix(tv: str) -> str:
-        return f'Project specifies a minimum meson_version \'{tv}\' but uses features which were added in newer versions:'
+    def get_warning_str_prefix(tv: T.Union[str, mesonlib.NoProjectVersion]) -> str:
+        if isinstance(tv, str):
+            return f'Project specifies a minimum meson_version \'{tv}\' but uses features which were added in newer versions:'
+        else:
+            return 'Project specifies no minimum version but uses features which were added in versions:'
 
     @staticmethod
-    def get_notice_str_prefix(tv: str) -> str:
+    def get_notice_str_prefix(tv: T.Union[str, mesonlib.NoProjectVersion]) -> str:
         return ''
 
-    def log_usage_warning(self, tv: str, location: T.Optional['mparser.BaseNode']) -> None:
+    def log_usage_warning(self, tv: T.Union[str, mesonlib.NoProjectVersion], location: T.Optional['mparser.BaseNode']) -> None:
+        if isinstance(tv, str):
+            prefix = f'Project targets {tv!r}'
+        else:
+            prefix = 'Project does not target a minimum version'
         args = [
-            'Project targets', f"'{tv}'",
+            prefix,
             'but uses feature introduced in',
             f"'{self.feature_version}':",
             f'{self.feature_name}.',
@@ -733,25 +706,33 @@ class FeatureDeprecated(FeatureCheckBase):
     # Class variable, shared across all instances
     #
     # Format: {subproject: {feature_version: set(feature_names)}}
-    feature_registry = {}  # type: T.ClassVar[T.Dict[str, T.Dict[str, T.Set[T.Tuple[str, T.Optional[mparser.BaseNode]]]]]]
+    feature_registry = {}
     emit_notice = True
 
     @staticmethod
-    def check_version(target_version: str, feature_version: str) -> bool:
-        # For deprecation checks we need to return the inverse of FeatureNew checks
-        return not mesonlib.version_compare_condition_with_min(target_version, feature_version)
+    def check_version(target_version: T.Union[str, mesonlib.NoProjectVersion], feature_version: str) -> bool:
+        if isinstance(target_version, str):
+            # For deprecation checks we need to return the inverse of FeatureNew checks
+            return not mesonlib.version_compare_condition_with_min(target_version, feature_version)
+        else:
+            # Always warn for functionality deprecated in the current semver slot (i.e. the current version).
+            return False
 
     @staticmethod
-    def get_warning_str_prefix(tv: str) -> str:
+    def get_warning_str_prefix(tv: T.Union[str, mesonlib.NoProjectVersion]) -> str:
         return 'Deprecated features used:'
 
     @staticmethod
-    def get_notice_str_prefix(tv: str) -> str:
+    def get_notice_str_prefix(tv: T.Union[str, mesonlib.NoProjectVersion]) -> str:
         return 'Future-deprecated features used:'
 
-    def log_usage_warning(self, tv: str, location: T.Optional['mparser.BaseNode']) -> None:
+    def log_usage_warning(self, tv: T.Union[str, mesonlib.NoProjectVersion], location: T.Optional['mparser.BaseNode']) -> None:
+        if isinstance(tv, str):
+            prefix = f'Project targets {tv!r}'
+        else:
+            prefix = 'Project does not target a minimum version'
         args = [
-            'Project targets', f"'{tv}'",
+            prefix,
             'but uses feature deprecated since',
             f"'{self.feature_version}':",
             f'{self.feature_name}.',
@@ -759,6 +740,40 @@ class FeatureDeprecated(FeatureCheckBase):
         if self.extra_message:
             args.append(self.extra_message)
         mlog.warning(*args, location=location)
+
+
+class FeatureBroken(FeatureCheckBase):
+    """Checks for broken features"""
+
+    # Class variable, shared across all instances
+    #
+    # Format: {subproject: {feature_version: set(feature_names)}}
+    feature_registry = {}
+    unconditional = True
+
+    @staticmethod
+    def check_version(target_version: T.Union[str, mesonlib.NoProjectVersion], feature_version: str) -> bool:
+        # always warn for broken stuff
+        return False
+
+    @staticmethod
+    def get_warning_str_prefix(tv: T.Union[str, mesonlib.NoProjectVersion]) -> str:
+        return 'Broken features used:'
+
+    @staticmethod
+    def get_notice_str_prefix(tv: T.Union[str, mesonlib.NoProjectVersion]) -> str:
+        return ''
+
+    def log_usage_warning(self, tv: T.Union[str, mesonlib.NoProjectVersion], location: T.Optional['mparser.BaseNode']) -> None:
+        args = [
+            'Project uses feature that was always broken,',
+            'and is now deprecated since',
+            f"'{self.feature_version}':",
+            f'{self.feature_name}.',
+        ]
+        if self.extra_message:
+            args.append(self.extra_message)
+        mlog.deprecation(*args, location=location)
 
 
 # This cannot be a dataclass due to https://github.com/python/mypy/issues/5374

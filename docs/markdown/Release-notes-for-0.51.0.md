@@ -143,7 +143,7 @@ then invoke Meson as `meson setup builddir/ -Dcmake_prefix_path=/tmp/dep`
 You can tag a test as needing to fail like this:
 
 ```meson
-test('shoulfail', exe, should_fail: true)
+test('shouldfail', exe, should_fail: true)
 ```
 
 If the test passes the problem is reported in the error logs but due
@@ -325,7 +325,7 @@ sub_proj = cmake.subproject('libsimple_cmake')
 # Fetch the dependency object
 cm_lib = sub_proj.dependency('cm_lib')
 
-executable(exe1, ['sources'], dependencies: [cm_lib])
+executable('exe1', ['sources'], dependencies: [cm_lib])
 ```
 
 It should be noted that not all projects are guaranteed to work. The

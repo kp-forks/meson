@@ -1,21 +1,10 @@
 #!/usr/bin/env python3
-
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2017-2021 The Meson development team
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import subprocess
 import shutil, sys, os
+from glob import glob
 
 import xml.etree.ElementTree as ET
 
@@ -41,7 +30,10 @@ class PkgGenerator:
         if os.path.exists(self.pkg_dir):
             shutil.rmtree(self.pkg_dir)
         os.mkdir(self.pkg_dir)
-        pyinstaller_bin = '/Users/jpakkane/Library/Python/3.8/bin/pyinstaller'
+        pyinstaller_bin = glob('/Users/jpakkane/Library/Python/*/bin/pyinstaller')
+        if len(pyinstaller_bin) != 1:
+            sys.exit('Could not determine unique installer.')
+        pyinstaller_bin = pyinstaller_bin[0]
         pyinst_cmd = [pyinstaller_bin,
                       '--clean',
                       '--additional-hooks-dir=packaging',
