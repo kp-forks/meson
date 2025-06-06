@@ -33,7 +33,7 @@ from .compilers import (
     is_header, is_object, is_source, clink_langs, sort_clink, all_languages,
     is_known_suffix, detect_static_linker
 )
-from .interpreterbase import FeatureNew, FeatureDeprecated
+from .interpreterbase import FeatureNew, FeatureDeprecated, UnknownValue
 
 if T.TYPE_CHECKING:
     from typing_extensions import Literal, TypedDict
@@ -648,7 +648,7 @@ class Target(HoldableObject, metaclass=abc.ABCMeta):
     def process_kwargs_base(self, kwargs: T.Dict[str, T.Any]) -> None:
         if 'build_by_default' in kwargs:
             self.build_by_default = kwargs['build_by_default']
-            if not isinstance(self.build_by_default, bool):
+            if not isinstance(self.build_by_default, (bool, UnknownValue)):
                 raise InvalidArguments('build_by_default must be a boolean value.')
 
         if not self.build_by_default and kwargs.get('install', False):
@@ -2181,10 +2181,16 @@ class StaticLibrary(BuildTarget):
                 elif self.rust_crate_type == 'staticlib':
                     self.suffix = 'a'
             else:
-                if 'c' in self.compilers and self.compilers['c'].get_id() == 'tasking':
-                    self.suffix = 'ma' if self.options.get_value('b_lto') and not self.prelink else 'a'
-                else:
-                    self.suffix = 'a'
+                self.suffix = 'a'
+                if 'c' in self.compilers and self.compilers['c'].get_id() == 'tasking' and not self.prelink:
+                    key = OptionKey('b_lto', self.subproject, self.for_machine)
+                    try:
+                        v = self.environment.coredata.get_option_for_target(self, key)
+                    except KeyError:
+                        v = self.environment.coredata.optstore.get_value_for(key)
+                    assert isinstance(v, bool), 'for mypy'
+                    if v:
+                        self.suffix = 'ma'
         self.filename = self.prefix + self.name + '.' + self.suffix
         self.outputs[0] = self.filename
 
