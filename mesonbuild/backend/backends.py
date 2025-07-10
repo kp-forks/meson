@@ -564,9 +564,7 @@ class Backend:
         cmd_args: T.List[str] = []
         for c in raw_cmd_args:
             if isinstance(c, programs.ExternalProgram):
-                p = c.get_path()
-                assert isinstance(p, str)
-                cmd_args.append(p)
+                cmd_args += c.get_command()
             elif isinstance(c, (build.BuildTarget, build.CustomTarget)):
                 cmd_args.append(self.get_target_filename_abs(c))
             elif isinstance(c, mesonlib.File):
@@ -1087,11 +1085,6 @@ class Backend:
             if compiler.language == 'vala':
                 if dep.type_name == 'pkgconfig':
                     assert isinstance(dep, dependencies.ExternalDependency)
-                    if dep.name == 'glib-2.0' and dep.version_reqs is not None:
-                        for req in dep.version_reqs:
-                            if req.startswith(('>=', '==')):
-                                commands += ['--target-glib', req[2:]]
-                                break
                     commands += ['--pkg', dep.name]
                 elif isinstance(dep, dependencies.ExternalLibrary):
                     commands += dep.get_link_args('vala')
@@ -1103,6 +1096,32 @@ class Backend:
                 commands += dep.get_exe_args(compiler)
             # For 'automagic' deps: Boost and GTest. Also dependency('threads').
             # pkg-config puts the thread flags itself via `Cflags:`
+        if compiler.language == 'vala':
+            # Vala wants to know the minimum glib version
+            for dep in target.added_deps:
+                if dep.name == 'glib-2.0':
+                    if dep.type_name == 'pkgconfig':
+                        assert isinstance(dep, dependencies.ExternalDependency)
+                        if dep.version_reqs is not None:
+                            for req in dep.version_reqs:
+                                if req.startswith(('>=', '==')):
+                                    commands += ['--target-glib', req[2:]]
+                                    break
+                    elif isinstance(dep, dependencies.InternalDependency) and dep.version is not None:
+                        glib_version = dep.version.split('.')
+                        if len(glib_version) != 3:
+                            mlog.warning(f'GLib version has unexpected format: {dep.version}')
+                            break
+                        try:
+                            # If GLib version is a development version, downgrade
+                            # --target-glib to the previous version, as valac will
+                            # complain about non-even minor versions
+                            glib_version[1] = str((int(glib_version[1]) // 2) * 2)
+                        except ValueError:
+                            mlog.warning(f'GLib version has unexpected format: {dep.version}')
+                            break
+                        commands += ['--target-glib', f'{glib_version[0]}.{glib_version[1]}']
+
         # Fortran requires extra include directives.
         if compiler.language == 'fortran':
             for lt in chain(target.link_targets, target.link_whole_targets):
@@ -1278,12 +1297,9 @@ class Backend:
                 extra_bdeps: T.List[T.Union[build.BuildTarget, build.CustomTarget, build.CustomTargetIndex]] = []
                 if isinstance(exe, build.CustomTarget):
                     extra_bdeps = list(exe.get_transitive_build_target_deps())
+                extra_bdeps.extend(t.depends)
+                extra_bdeps.extend(a for a in t.cmd_args if isinstance(a, build.BuildTarget))
                 extra_paths = self.determine_windows_extra_paths(exe, extra_bdeps)
-                for a in t.cmd_args:
-                    if isinstance(a, build.BuildTarget):
-                        for p in self.determine_windows_extra_paths(a, []):
-                            if p not in extra_paths:
-                                extra_paths.append(p)
             else:
                 extra_paths = []
 
@@ -1309,8 +1325,12 @@ class Backend:
                 else:
                     raise MesonException('Bad object in test command.')
 
+            # set LD_LIBRARY_PATH for
+            # a) dependencies, as relying on rpath is not very safe:
+            #    https://github.com/mesonbuild/meson/pull/11119
+            # b) depends and targets passed via args.
             t_env = copy.deepcopy(t.env)
-            if not machine.is_windows() and not machine.is_cygwin() and not machine.is_darwin():
+            if not machine.is_windows() and not machine.is_cygwin():
                 ld_lib_path_libs: T.Set[build.SharedLibrary] = set()
                 for d in depends:
                     if isinstance(d, build.BuildTarget):
@@ -1323,6 +1343,8 @@ class Backend:
 
                 if ld_lib_path:
                     t_env.prepend('LD_LIBRARY_PATH', list(ld_lib_path), ':')
+                    if machine.is_darwin():
+                        t_env.prepend('DYLD_LIBRARY_PATH', list(ld_lib_path), ':')
 
             ts = TestSerialisation(t.get_name(), t.project_name, t.suite, cmd, is_cross,
                                    exe_wrapper, self.environment.need_exe_wrapper(),
